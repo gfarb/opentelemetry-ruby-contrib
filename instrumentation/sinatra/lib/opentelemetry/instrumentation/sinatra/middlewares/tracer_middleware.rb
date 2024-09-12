@@ -16,25 +16,31 @@ module OpenTelemetry
           end
 
           def call(env)
+            span = OpenTelemetry::Instrumentation::Rack.current_span
+            set_span_name_and_attributes(env, span) if span.recording?
             response = @app.call(env)
+            # the following is if we need to set span attributes after the response
+            # set_span_name_and_attributes(env, span) unless !span.recording?
+            # response
           ensure
-            trace_response(env, response)
+            process_response(env, response, span)
           end
 
-          def trace_response(env, response)
-            span = OpenTelemetry::Instrumentation::Rack.current_span
+          def process_response(env, response, span)
             return unless span.recording?
 
+            sinatra_response = response.nil? ? nil : ::Sinatra::Response.new([], response.first)
+            if !sinatra_response.nil? && sinatra_response.server_error?
+              span.record_exception(env['sinatra.error']) if env['sinatra.error']
+              span.status = OpenTelemetry::Trace::Status.error
+            end
+
+            set_span_name_and_attributes(env, span)
+          end
+
+          def set_span_name_and_attributes(env, span)
             span.set_attribute('http.route', env['sinatra.route'].split.last) if env['sinatra.route']
             span.name = env['sinatra.route'] if env['sinatra.route']
-
-            return if response.nil?
-
-            sinatra_response = ::Sinatra::Response.new([], response.first)
-            return unless sinatra_response.server_error?
-
-            span.record_exception(env['sinatra.error']) if env['sinatra.error']
-            span.status = OpenTelemetry::Trace::Status.error
           end
         end
       end
